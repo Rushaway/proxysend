@@ -49,7 +49,12 @@
 #include <cstdlib>
 #include <mutex>
 #include <thread>
+#include <atomic>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <pthread.h>
+#endif
 #include <ISDKTools.h>
 
 /**
@@ -398,6 +403,45 @@ proxysend::prop_types Sample::guess_prop_type(const SendProp *prop, const SendTa
 	return ::guess_prop_type(prop, table);
 }
 
+#ifdef _WIN32
+using tls_key_t = DWORD;
+static constexpr const tls_key_t tls_invalid_key{TLS_OUT_OF_INDEXES};
+
+static inline bool tls_key_create(tls_key_t &key, void (CALLBACK *dtor)(void *)) noexcept
+{
+	key = FlsAlloc(dtor);
+	return key != tls_invalid_key;
+}
+
+static inline bool tls_key_delete(tls_key_t key) noexcept
+{ return FlsFree(key) != 0; }
+
+static inline void *tls_get(tls_key_t key) noexcept
+{ return FlsGetValue(key); }
+
+static inline void tls_set(tls_key_t key, void *value) noexcept
+{ FlsSetValue(key, value); }
+
+#define TLS_DTOR_CALL CALLBACK
+#else
+using tls_key_t = pthread_key_t;
+static constexpr const tls_key_t tls_invalid_key{PTHREAD_KEYS_MAX+1};
+
+static inline bool tls_key_create(tls_key_t &key, void (*dtor)(void *)) noexcept
+{ return pthread_key_create(&key, dtor) == 0; }
+
+static inline bool tls_key_delete(tls_key_t key) noexcept
+{ return pthread_key_delete(key) == 0; }
+
+static inline void *tls_get(tls_key_t key) noexcept
+{ return pthread_getspecific(key); }
+
+static inline void tls_set(tls_key_t key, void *value) noexcept
+{ pthread_setspecific(key, value); }
+
+#define TLS_DTOR_CALL
+#endif
+
 template <typename T>
 class thread_var_base
 {
@@ -436,12 +480,12 @@ public:
 	}
 
 protected:
-	static constexpr const pthread_key_t invalid_key{PTHREAD_KEYS_MAX+1};
+	static constexpr const tls_key_t invalid_key{tls_invalid_key};
 
-	pthread_key_t key{invalid_key};
-	bool allocated_{false};
+	tls_key_t key{invalid_key};
+	std::atomic<bool> allocated_{false};
 
-	static void dtor(void *ptr) noexcept
+	static void TLS_DTOR_CALL dtor(void *ptr) noexcept
 	{ delete reinterpret_cast<T *>(ptr); }
 
 	T *get_ptr_raw() const noexcept
@@ -449,7 +493,7 @@ protected:
 		if(!allocated_) {
 			return nullptr;
 		}
-		return reinterpret_cast<T *>(pthread_getspecific(key));
+		return reinterpret_cast<T *>(tls_get(key));
 	}
 
 	ptr_ret_t get_ptr() const noexcept
@@ -473,36 +517,38 @@ protected:
 		if(!allocated_ && !allocate()) {
 			return nullptr;
 		}
-		T *ptr{reinterpret_cast<T *>(pthread_getspecific(key))};
+		T *ptr{reinterpret_cast<T *>(tls_get(key))};
 		if(!ptr) {
 			ptr = new T{};
-			pthread_setspecific(key, ptr);
+			tls_set(key, ptr);
 		}
 		return ptr;
 	}
 
 	bool allocate() noexcept
 	{
-		if(!__sync_bool_compare_and_swap(&allocated_, 0, 1)) {
+		bool expected{false};
+		if(!allocated_.compare_exchange_strong(expected, true)) {
 			return true;
 		}
-		if(pthread_key_create(&key, dtor) != 0) {
+		if(!tls_key_create(key, dtor)) {
 			return false;
 		}
-		pthread_setspecific(key, new T{});
+		tls_set(key, new T{});
 		return true;
 	}
 
 	bool unallocate() noexcept
 	{
-		if(!__sync_bool_compare_and_swap(&allocated_, 1, 0)) {
+		bool expected{true};
+		if(!allocated_.compare_exchange_strong(expected, false)) {
 			return true;
 		}
-		T *old_ptr{reinterpret_cast<T *>(pthread_getspecific(key))};
+		T *old_ptr{reinterpret_cast<T *>(tls_get(key))};
 		if(old_ptr) {
 			delete old_ptr;
 		}
-		return (pthread_key_delete(key) == 0);
+		return tls_key_delete(key);
 	}
 
 	void reset_ptr(T *ptr) noexcept
@@ -514,7 +560,7 @@ protected:
 		if(!allocated_ && !allocate()) {
 			return;
 		}
-		pthread_setspecific(key, ptr);
+		tls_set(key, ptr);
 	}
 
 private:
@@ -523,6 +569,8 @@ private:
 	thread_var_base(thread_var_base &&) = delete;
 	thread_var_base &operator=(thread_var_base &&) = delete;
 };
+
+#undef TLS_DTOR_CALL
 
 template <>
 inline bool thread_var_base<bool>::operator!() const noexcept
@@ -1059,7 +1107,7 @@ struct callback_t final : prop_reference_t
 			EHANDLE &new_value{new_pData.get<EHANDLE>(0)};
 			pEntity = gamehelpers->ReferenceToEntity(sp_value);
 			if(pEntity) {
-				new_value = pEntity->GetRefEHandle();
+				static_cast<CBaseHandle &>(new_value) = pEntity->GetRefEHandle();
 			} else {
 				new_value.Term();
 			}
