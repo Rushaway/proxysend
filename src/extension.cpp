@@ -52,6 +52,7 @@
 #include <atomic>
 #ifdef _WIN32
 #include <windows.h>
+#include <malloc.h>
 #else
 #include <pthread.h>
 #endif
@@ -772,7 +773,11 @@ struct packed_entity_data_t final
 			writeBuf = nullptr;
 		}
 		if(packedData) {
+#ifdef _WIN32
+			_aligned_free(packedData);
+#else
 			free(packedData);
+#endif
 			packedData = nullptr;
 		}
 	}
@@ -780,7 +785,11 @@ struct packed_entity_data_t final
 	void allocate() noexcept {
 		reset();
 
+#ifdef _WIN32
+		packedData = static_cast<char *>(_aligned_malloc(MAX_PACKEDENTITY_DATA, 4));
+#else
 		packedData = static_cast<char *>(aligned_alloc(4, MAX_PACKEDENTITY_DATA));
+#endif
 		memset(packedData, 0x0, MAX_PACKEDENTITY_DATA);
 		writeBuf = new bf_write{"SV_PackEntity->writeBuf", packedData, MAX_PACKEDENTITY_DATA};
 	}
@@ -1336,7 +1345,7 @@ struct callback_t final : prop_reference_t
 	}
 
 	IChangeableForward *fwd{nullptr};
-	std::size_t offset{-1};
+	std::size_t offset{static_cast<std::size_t>(-1)};
 	prop_types type{prop_types::unknown};
 	int element{0};
 	std::string name{};
@@ -1397,7 +1406,7 @@ struct proxyhook_t final
 	{
 		callbacks_t::iterator it_callback{callbacks.find(pProp)};
 		if(it_callback == callbacks.end()) {
-			it_callback = callbacks.emplace(std::pair<const SendProp *, callback_t>{pProp, callback_t{ref, pProp, std::move(name), element, type, offset}}).first;
+			it_callback = callbacks.emplace(std::pair<const SendProp *, callback_t>{pProp, callback_t{ref, pProp, std::move(name), element, type, static_cast<std::size_t>(offset)}}).first;
 		}
 
 		it_callback->second.add_function(func, per_client);
@@ -2082,7 +2091,7 @@ static cell_t proxysend_hook(IPluginContext *pContext, const cell_t *params) noe
 		for(int i = 0; i < NumProps; ++i) {
 			SendProp *pChildProp{pPropTable->GetProp(i)};
 			std::string tmp_name{prop_name};
-			int offset{info.actual_offset + pChildProp->GetOffset()};
+			int offset{static_cast<int>(info.actual_offset + pChildProp->GetOffset())};
 			cell_t ret{proxysend_handle_hook(pContext, it_hook, ref, offset, pChildProp, std::move(tmp_name), i, pTable, callback, per_client)};
 			if(ret != 0) {
 				return ret;
