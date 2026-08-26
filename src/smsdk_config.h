@@ -37,10 +37,12 @@
  * @brief Contains macros for configuring basic extension information.
  */
 
+#include "version.h"
+
 /* Basic information exposed publicly */
-#define SMEXT_CONF_NAME			"proxysend"
-#define SMEXT_CONF_DESCRIPTION	"proxysend"
-#define SMEXT_CONF_VERSION		"0.1.0.8"
+#define SMEXT_CONF_NAME			"ProxySend"
+#define SMEXT_CONF_DESCRIPTION	"Hooks and overrides networked SendProp values per-entity, optionally per-client, before they are sent to clients"
+#define SMEXT_CONF_VERSION		SM_FULL_VERSION
 #define SMEXT_CONF_AUTHOR		"Arthurdead"
 #define SMEXT_CONF_URL			""
 #define SMEXT_CONF_LOGTAG		"PROXYSEND"
